@@ -35,8 +35,16 @@ def db_schemas(catalog: Optional[str] = "", db_schema_filter_pattern: Optional[s
 @app.get("/tables", response_model=list[Table])
 def tables(catalog: Optional[str] = "", db_schema_filter_pattern: Optional[str] = "", table_name_filter_pattern: Optional[str] = ""):
     return [
-        Table(catalog_name=t[0], db_schema_name=t[1], table_name=t[2], table_type=t[3])
-        for t in conn.sql(f"SELECT table_catalog, table_schema, table_name, table_type FROM information_schema.tables").fetchall()
+        Table(catalog_name=t[0], 
+              db_schema_name=t[1], 
+              table_name=t[2], 
+              table_type=t[3], 
+              table_schema=duckdb_to_arrow_schema(conn, f"SELECT * FROM {t[2]}").serialize().to_pybytes().hex())
+        for t in conn.sql(f"""
+                          SELECT table_catalog, table_schema, table_name, table_type 
+                          FROM information_schema.tables
+                          """).fetchall()
+        if not table_name_filter_pattern or t[2] == table_name_filter_pattern
     ]
 
 

@@ -21,11 +21,8 @@ def generate_bytes(schema, batches):
         with sink.getbuffer() as buffer:
             yield buffer
 
-def duckdb_to_arrow_schema(conn, query, params = []):
-    if params:
-        result = conn.execute(f"DESCRIBE {query}", params=params).fetchall()
-    else:
-        result = conn.execute(f"DESCRIBE {query}").fetchall()
+def duckdb_to_arrow_schema(conn, query):
+    result = conn.execute(f"DESCRIBE {query}").fetchall()
 
     fields = []
     for row in result:

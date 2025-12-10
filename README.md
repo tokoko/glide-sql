@@ -7,11 +7,63 @@ Glide SQL is an http-based protocol heavily modeled after Arrow Flight and Arrow
 
 * Metadata Operations - Unlike Flight SQL, metadata requests are eager and responses are json rather than arrow. The assumption is that the performance should not be a factor unless working with a huge database.
 * Data Operations - flow of client-server interaction are similar to flight. All requests other than the final calls to get_stream are json, while content-type of the final calls should be configurable. It can be arrow.stream, parquet or something else.
-* Type Information - type information returned for a table or a query will be in some json representation of arrow schema. (?) Maybe it should also be configurable to use substrait instead of arrow.
+* Type Information - type information returned for a table or a query will be in some json representation of arrow schema. (?) Maybe it should also be configurable to use substrait instead of arrow. Current implementation return hex of serialized arrow schema.
 
-### Example Usage
+## Glide SQL API Specification (so far)
 
-#### List Tables
+A REST API for querying databases with Arrow streaming support.
+
+### Metadata Endpoints (GET)
+
+- `/catalogs` - List available catalogs
+- `/db_schemas` - List schemas, optionally filtered by catalog and pattern
+- `/tables` - List tables with schema metadata (serialized as hex), optionally filtered by catalog, schema, and table name patterns
+- `/table_types` - List supported table types
+
+### Query Endpoints
+
+#### POST `/get_glide_info`
+Submit a query (SQL or Substrait plan) and receive a ticket for streaming results.
+
+**Request Body:**
+```json
+{
+  "query": "string",
+  "substrait": "string (hex)",
+  "preferred_format": "string"
+}
+```
+
+**Response:**
+```json
+{
+  "endpoints": [
+    {
+      "ticket": "string",
+      "locations": ["string"]
+    }
+  ]
+}
+```
+
+#### GET `/get_stream?ticket={ticket}`
+Stream query results as Arrow IPC format.
+
+**Response:** `application/vnd.apache.arrow.stream`
+
+### Query Flow
+
+1. POST query to `/get_glide_info` → receive ticket
+2. GET `/get_stream?ticket={ticket}` → receive Arrow stream
+
+### Schema Encoding
+
+- Table schemas: hex-encoded Arrow IPC format
+- Substrait plans: hex-encoded binary format
+
+## Example Usage
+
+### List Tables
 ```
 import requests
 
@@ -28,7 +80,7 @@ requests.get(f'{server_url}/tables').json()
     },
 ]
 ```
-#### Run SQL Query
+### Run SQL Query
 ```
 info = requests.post(f'{server_url}/get_glide_info', json={'query': 'SELECT c_custkey FROM customer'}).json()
 
@@ -68,3 +120,7 @@ pa.Table.from_batches(batches).to_pandas()
 [1500 rows x 1 columns]
 ```
 
+### Run Substrait Query
+```
+example in client.py
+```

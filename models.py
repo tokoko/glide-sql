@@ -13,7 +13,7 @@ class Table(BaseModel):
     db_schema_name: str
     table_name: str
     table_type: str
-    # table_schema: bytes
+    table_schema: str
 
 class TableType(BaseModel):
     table_type: str

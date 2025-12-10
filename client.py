@@ -48,17 +48,13 @@ from substrait.builders.extended_expression import column, scalar_function, lite
 from substrait.builders.type import i64
 from substrait.extension_registry import ExtensionRegistry
 
-## This is a hack. you need to know table schemas to build substrait plan.
-## should be glide sql call but /tables endpoint doesn't yet implement returning a schema
-def get_table_schema(table):
-    pa_schema = run_query(f"SELECT * FROM {table} LIMIT 1").schema
-    return pa_substrait.serialize_schema(pa_schema).to_pysubstrait().base_schema
-
-def read_duckdb_named_table(name: str):
-    substrait_schema = get_table_schema(name)
+def read_glide_sql_named_table(name: str):
+    pa_schema_hex = requests.get(f'{server_url}/tables?table_name_filter_pattern={name}').json()[0]['table_schema']
+    pa_schema = pa.ipc.read_schema(pa.BufferReader(bytes.fromhex(pa_schema_hex)))
+    substrait_schema = pa_substrait.serialize_schema(pa_schema).to_pysubstrait().base_schema
     return read_named_table(name, substrait_schema)
 
-table = read_duckdb_named_table('customer')
+table = read_glide_sql_named_table('customer')
 
 ## c_custkey = 3
 table = filter(
