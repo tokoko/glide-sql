@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import uvicorn
 import duckdb
@@ -7,17 +7,57 @@ import random
 import string
 from models import Catalog, DbSchema, Table, TableType, GlideEndpoint, GlideInfo, StatementQuery
 from utils import generate_bytes, duckdb_to_arrow_schema, substrait_to_arrow_schema
+import boto3
+from botocore.client import Config
 
 conn = duckdb.connect()
 conn.execute("INSTALL tpch")
 conn.execute("LOAD tpch")
+conn.execute("INSTALL httpfs")
+conn.execute("LOAD httpfs")
 conn.execute("INSTALL substrait from community")
 conn.execute("LOAD substrait")
 conn.execute("CALL dbgen(sf=0.01)")
 
+bucket_name = "glider"
+endpoint_url = 'minio:9000'
+aws_access_key_id = 'minioadmin'
+aws_secret_access_key = 'minioadmin'
+protocol = 'http'
+
+conn.sql(
+f"""
+CREATE SECRET (
+    TYPE s3,
+    KEY_ID '{aws_access_key_id}',
+    SECRET '{aws_secret_access_key}',
+    REGION 'us-east-1',
+    ENDPOINT '{endpoint_url}',
+    USE_SSL '{'false' if protocol == 'http' else 'true'}',
+    URL_STYLE 'path'
+);
+"""
+)
+
 app = FastAPI()
 
 glide_store = {}
+arrow_store = {}
+schema_store = {} ## this is unnecessary
+
+s3_client = boto3.client(
+    's3',
+    endpoint_url=f'{protocol}://{endpoint_url}',
+    aws_access_key_id=aws_access_key_id,
+    aws_secret_access_key=aws_secret_access_key,
+    config=Config(signature_version='s3v4'),
+    region_name='us-east-1'
+)
+
+try:
+    s3_client.head_bucket(Bucket=bucket_name)
+except:
+    s3_client.create_bucket(Bucket=bucket_name)
 
 @app.get("/catalogs", response_model=list[Catalog])
 def catalogs():
@@ -58,30 +98,60 @@ def table_types():
         TableType(table_type="internal")
     ]
 
+def run_statement(statement: StatementQuery, handle: str, schema):
+    if statement.sql:
+        quack = conn.sql(statement.sql)
+    else:
+        quack = conn.sql("CALL from_substrait(?)", params=[bytes.fromhex(statement.substrait)])
+
+    if statement.preferred_format == "application/vnd.apache.arrow.stream":
+        arrow_store[handle] = (schema, quack.fetch_arrow_reader())
+        location = ""
+    elif statement.preferred_format == "application/vnd.apache.parquet":
+        object_key = f'{handle}.parquet'
+        quack.write_parquet(f"s3://{bucket_name}/{object_key}")
+        location = s3_client.generate_presigned_url('get_object', Params={'Bucket': bucket_name, 'Key': object_key}, ExpiresIn=3600)
+    else:
+        raise Exception(f'Unknown format {statement.preferred_format}')
+
+    
+    
+    gi: GlideInfo = glide_store[handle]
+    gi.status = "completed"
+    gi.endpoints.append(GlideEndpoint(ticket=handle, locations=[location]))
+
+
+
 @app.post("/get_glide_info", response_model=GlideInfo)
-def get_flight_info(statement: StatementQuery):
-    ticket = ''.join(random.choices(string.ascii_lowercase, k=10))
+def get_flight_info(statement: StatementQuery, bt: BackgroundTasks):
+    handle = ''.join(random.choices(string.ascii_lowercase, k=10))
 
-
-    # TODO this should probably run in the background
-    if statement.query:
-        schema = duckdb_to_arrow_schema(conn, statement.query)
-        reader = conn.sql(statement.query).fetch_arrow_reader()
+    if statement.handle:
+        return glide_store[statement.handle]
+    
+    if statement.sql:
+        schema = duckdb_to_arrow_schema(conn, statement.sql)
     else:
         schema = substrait_to_arrow_schema(statement.substrait)
-        reader = conn.sql("CALL from_substrait(?)", params=[bytes.fromhex(statement.substrait)]).fetch_arrow_reader()
-        
 
-    glide_store[ticket] = (schema, reader)
-
-    return GlideInfo(
-        endpoints=[GlideEndpoint(ticket=ticket, locations=[""])] # TODO Is there an actual reason why ticket needs to be provided separately??
+    glide_info = GlideInfo(
+        handle=handle,
+        status="in-progress",
+        endpoints=[] # TODO Is there an actual reason why ticket needs to be provided separately??
     )
+
+    glide_store[handle] = glide_info
+
+    # bt.add_task(run_statement, statement, handle, schema)
+
+    run_statement(statement, handle, schema)
+    
+    return glide_info
 
 
 @app.get("/get_stream")
 def get_stream(ticket: str):
-    stored_execution = glide_store[ticket]
+    stored_execution = arrow_store[ticket]
     return StreamingResponse(
         generate_bytes(stored_execution[0], stored_execution[1]),
         media_type="application/vnd.apache.arrow.stream"

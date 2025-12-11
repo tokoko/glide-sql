@@ -1,8 +1,11 @@
 {
 	"name": "Glide SQL",
-	"build": {
-		"dockerfile": "Dockerfile"
-	},
+	"dockerComposeFile": "compose.yaml",
+	"service": "app",
+	"workspaceFolder": "/workspace",
+	// "build": {
+	// 	"dockerfile": "Dockerfile"
+	// },
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
@@ -15,7 +18,11 @@
 
 	"customizations": {
 		"vscode": {
-			"extensions": ["ms-python.python"]
+		"extensions": [
+			"ms-python.python",
+			"ms-python.vscode-pylance",
+			"dbaeumer.vscode-eslint"
+		]
 		}
 	}
 

@@ -11,5 +11,6 @@ dependencies = [
     "duckdb==1.2.2",
     "requests",
     "substrait[extensions]",
-    "pandas"
+    "pandas",
+    "boto3"
 ]

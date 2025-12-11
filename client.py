@@ -4,44 +4,69 @@ from pprint import pprint
 
 server_url = 'http://localhost:8000'
 
-pprint(requests.get(f'{server_url}/tables').json())
+# pprint(requests.get(f'{server_url}/tables').json())
 
-pprint(requests.get(f'{server_url}/db_schemas').json())
+# pprint(requests.get(f'{server_url}/db_schemas').json())
 
 """
 SQL Query
 """
-def run_query(query):
+def run_query(query, preferred_format = None):
     if isinstance(query, str):
-        payload = {'query': query}
+        payload = {'sql': query}
     else:
         payload = {'substrait': query.SerializeToString().hex()}
-    info = requests.post(f'{server_url}/get_glide_info', json=payload).json()
 
+    if preferred_format:
+        payload['preferred_format'] = preferred_format
+
+    has_completed = False
+    handle = ""
+    seen_endpoints = 0
     batches = []
+    while not has_completed:
+        info = requests.post(f'{server_url}/get_glide_info', json=payload).json()
+        handle = info["handle"]
+        status = info["status"]
+        payload["handle"] = handle
+        if status == "completed":
+            has_completed = True
+        info = requests.post(f'{server_url}/get_glide_info', json=payload).json()
 
-    for endpoint in info['endpoints']:
-        location = endpoint['locations'][0]
-        location = f'{server_url}/get_stream' if not location else location
-        ticket = endpoint['ticket']
-        url = f'{location}?ticket={ticket}'
-        response = requests.get(url)
+        for endpoint in info['endpoints'][seen_endpoints:]:
+            location = endpoint['locations'][0]
+            if preferred_format == "application/vnd.apache.parquet":
+                import pyarrow.parquet as pq
+                import io
+                response = requests.get(location, stream=True)
+                response.raise_for_status()
+                parquet_file = pq.ParquetFile(io.BytesIO(response.content))
 
-        with pa.ipc.open_stream(response.content) as reader:
-            schema = reader.schema
-            try:
-                while True:
-                    batches.append(reader.read_next_batch())
-            except StopIteration:
-                pass
+                for batch in parquet_file.iter_batches(batch_size=1024):
+                    batches.append(batch)
+            else:
+                
+                location = f'{server_url}/get_stream' if not location else location
+                ticket = endpoint['ticket']
+                url = f'{location}?ticket={ticket}'
+                response = requests.get(url)
+
+                with pa.ipc.open_stream(response.content) as reader:
+                    try:
+                        while True:
+                            batches.append(reader.read_next_batch())
+                    except StopIteration:
+                        pass
     
     return pa.Table.from_batches(batches)
 
-print(run_query('SELECT c_custkey FROM customer').to_pandas())
+print(run_query('SELECT c_custkey FROM customer', 'application/vnd.apache.parquet').to_pandas())
+print(run_query('SELECT c_custkey FROM customer', 'application/vnd.apache.arrow.stream').to_pandas())
 
-"""
-Substrait Query
-"""
+
+# """
+# Substrait Query
+# """
 import pyarrow.substrait as pa_substrait
 from substrait.builders.plan import read_named_table, filter
 from substrait.builders.extended_expression import column, scalar_function, literal
@@ -68,3 +93,4 @@ table = filter(
 
 table = table(ExtensionRegistry())
 print(run_query(table).to_pandas())
+print(run_query(table, preferred_format='application/vnd.apache.parquet').to_pandas())

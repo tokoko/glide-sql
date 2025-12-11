@@ -23,10 +23,14 @@ class GlideEndpoint(BaseModel):
     locations: list[str]
 
 class GlideInfo(BaseModel):
-    # schema
+    handle: str
+    status: str
     endpoints: list[GlideEndpoint]
 
 class StatementQuery(BaseModel):
-    query: Optional[str] = ''
+    handle: Optional[str] = ''
+    sql: Optional[str] = ''
     substrait: Optional[str] = ''
+    # prepared_statement_handle: Optional[str] = ''
     preferred_format: Optional[str] = 'application/vnd.apache.arrow.stream'
+#   result_set_expiration
