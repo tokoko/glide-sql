@@ -5,7 +5,7 @@ import uvicorn
 import duckdb
 import random
 import string
-from models import Catalog, DbSchema, Table, TableType, GlideEndpoint, GlideInfo, StatementQuery
+from models import Catalog, DbSchema, Table, TableType, ResultEndpoint, ResultSet, Query, PreparedStatement
 from utils import generate_bytes, duckdb_to_arrow_schema, substrait_to_arrow_schema
 import boto3
 from botocore.client import Config
@@ -17,7 +17,7 @@ conn.execute("INSTALL httpfs")
 conn.execute("LOAD httpfs")
 conn.execute("INSTALL substrait from community")
 conn.execute("LOAD substrait")
-conn.execute("CALL dbgen(sf=0.01)")
+conn.execute("CALL dbgen(sf=4)")
 
 bucket_name = "glider"
 endpoint_url = 'minio:9000'
@@ -98,11 +98,19 @@ def table_types():
         TableType(table_type="internal")
     ]
 
-def run_statement(statement: StatementQuery, handle: str, schema):
-    if statement.sql:
-        quack = conn.sql(statement.sql)
+def execute_query(query: str, query_type: str):
+    if query_type == "sql":
+        return conn.sql(query)
+    elif query_type == "sql":
+        return conn.sql("CALL from_substrait(?)", params=[bytes.fromhex(query)])
+    elif query_type == "prepared_statement":
+        return conn.sql(f"EXECUTE {query}")
     else:
-        quack = conn.sql("CALL from_substrait(?)", params=[bytes.fromhex(statement.substrait)])
+        raise Exception(f"Unknown query_type {query_type}")
+    
+
+def run_statement(statement: Query, handle: str, schema):
+    quack = execute_query(statement.query, statement.query_type)
 
     if statement.preferred_format == "application/vnd.apache.arrow.stream":
         arrow_store[handle] = (schema, quack.fetch_arrow_reader())
@@ -113,40 +121,63 @@ def run_statement(statement: StatementQuery, handle: str, schema):
         location = s3_client.generate_presigned_url('get_object', Params={'Bucket': bucket_name, 'Key': object_key}, ExpiresIn=3600)
     else:
         raise Exception(f'Unknown format {statement.preferred_format}')
-
     
-    
-    gi: GlideInfo = glide_store[handle]
+    gi: ResultSet = glide_store[handle]
     gi.status = "completed"
-    gi.endpoints.append(GlideEndpoint(ticket=handle, locations=[location]))
+    gi.endpoints.append(ResultEndpoint(ticket=handle, locations=[location]))
 
+### Prepared Statements
 
+prepared_statements = {}
 
-@app.post("/get_glide_info", response_model=GlideInfo)
-def get_flight_info(statement: StatementQuery, bt: BackgroundTasks):
+# should prepared statements be named?
+@app.post("/prepared_statement", response_model=PreparedStatement)
+def get_flight_info(prepared_statement: PreparedStatement):
+    handle = ''.join(random.choices(string.ascii_lowercase, k=10))
+    conn.sql(f"PREPARE {handle} AS {prepared_statement.query}")
+    prepared_statement.handle = handle
+    return prepared_statement
+
+### Query
+
+@app.get("/result_set/{handle}", response_model=ResultSet)
+def result_set(handle: str):
+    return glide_store[handle]
+    
+@app.post("/query", response_model=ResultSet)
+def get_flight_info(statement: Query, bt: BackgroundTasks):
     handle = ''.join(random.choices(string.ascii_lowercase, k=10))
 
-    if statement.handle:
-        return glide_store[statement.handle]
-    
-    if statement.sql:
-        schema = duckdb_to_arrow_schema(conn, statement.sql)
+    if statement.query_type == "sql":
+        schema = duckdb_to_arrow_schema(conn, statement.query)
+    elif statement.query_type == "substrait":
+        schema = substrait_to_arrow_schema(statement.query)
+    elif statement.query_type == "prepared_statement":
+        schema = conn.sql(f"EXECUTE {statement.prepared_statement_handle}").fetch_arrow_table().schema ## TODO
     else:
-        schema = substrait_to_arrow_schema(statement.substrait)
-
-    glide_info = GlideInfo(
+        raise Exception(f"Unknown query_type {statement.query}")
+ 
+    result_set = ResultSet(
         handle=handle,
         status="in-progress",
+        schema=schema.serialize().to_pybytes().hex(),
         endpoints=[] # TODO Is there an actual reason why ticket needs to be provided separately??
     )
 
-    glide_store[handle] = glide_info
+    glide_store[handle] = result_set
 
-    # bt.add_task(run_statement, statement, handle, schema)
-
-    run_statement(statement, handle, schema)
+    if statement.allow_direct:
+        quack = execute_query(statement.query, statement.query_type)
+        response = StreamingResponse(
+            generate_bytes(schema, quack.fetch_arrow_reader()),
+            media_type="application/vnd.apache.arrow.stream"
+        )
+        response.headers["X-Glide-Query-Handle"] = handle
+        return response
+    else:
+        bt.add_task(run_statement, statement, handle, schema)
     
-    return glide_info
+    return result_set
 
 
 @app.get("/get_stream")

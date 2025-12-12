@@ -18,19 +18,30 @@ class Table(BaseModel):
 class TableType(BaseModel):
     table_type: str
 
-class GlideEndpoint(BaseModel):
+class PreparedStatement(BaseModel):
+    handle: Optional[str] = ""
+    query: str
+
+class ResultEndpoint(BaseModel):
     ticket: str
     locations: list[str]
 
-class GlideInfo(BaseModel):
+class ResultSet(BaseModel):
     handle: str
     status: str
-    endpoints: list[GlideEndpoint]
+    schema: str
+    endpoints: list[ResultEndpoint]
 
-class StatementQuery(BaseModel):
-    handle: Optional[str] = ''
-    sql: Optional[str] = ''
-    substrait: Optional[str] = ''
-    # prepared_statement_handle: Optional[str] = ''
+class QueryResult(BaseModel):
+    handle: str
+    status: str
+    prepared_statement_handle: Optional[str]
+    result_sets: list[ResultSet]
+
+class Query(BaseModel):
+    query: str
+    query_type: str = "sql"
+    prepare: bool = False
+    allow_direct: bool = False
     preferred_format: Optional[str] = 'application/vnd.apache.arrow.stream'
 #   result_set_expiration
